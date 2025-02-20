@@ -1,12 +1,13 @@
 #![allow(incomplete_features)]
 #![feature(generic_const_exprs)]
 
-use count_bytes::W;
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
 
-const fn generate_data() -> [i16; W] {
-    let mut data: [i16; W] = [0; W];
+const W: usize = 64 * 1024;
+
+fn generate_data() -> Vec<i16> {
+    let mut data = vec![0; W];
 
     let mut i = 0;
     while i < W {
@@ -14,34 +15,18 @@ const fn generate_data() -> [i16; W] {
         i += 1;
     }
 
-    data
+    black_box(data)
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("count_newlines");
-    group.throughput(criterion::Throughput::Bytes(count_bytes::W as u64));
+    group.throughput(criterion::Throughput::Bytes(W as u64));
 
-    //group.bench_function("naive", |b| {
-    //    b.iter_batched_ref(
-    //        || generate_data(),
-    //        |data| count_bytes::naive(black_box(data)),
-    //        criterion::BatchSize::SmallInput,
-    //    )
-    //});
-    //
-    //group.bench_function("divide & conquer", |b| {
-    //    b.iter_batched_ref(
-    //        || generate_data(),
-    //        |data| count_bytes::divide(black_box(data)),
-    //        criterion::BatchSize::SmallInput,
-    //    )
-    //});
-
-    group.bench_function("divide & conquer + simd", |b| {
+    group.bench_function("naive", |b| {
         b.iter_batched_ref(
             || generate_data(),
-            |data| count_bytes::divide_simd(black_box(data)),
-            criterion::BatchSize::SmallInput,
+            |data| count_bytes::naive(black_box(data)),
+            criterion::BatchSize::LargeInput,
         )
     });
 
@@ -49,7 +34,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter_batched_ref(
             || generate_data(),
             |data| count_bytes::interleaved_pipelined(black_box(data)),
-            criterion::BatchSize::SmallInput,
+            criterion::BatchSize::LargeInput,
         )
     });
 
