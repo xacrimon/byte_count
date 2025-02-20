@@ -1,0 +1,17 @@
+[package]
+name = "count_bytes"
+version = "0.1.0"
+edition = "2021"
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "count_newlines"
+harness = false
