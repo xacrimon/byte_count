@@ -3,12 +3,13 @@
 #![feature(slice_as_chunks)]
 #![feature(stmt_expr_attributes)]
 #![feature(portable_simd)]
+#![feature(array_chunks)]
 
 use std::convert::TryInto;
 
 type Q = i16;
 
-const GROUP_SIZE: usize = 16;
+const GROUP_SIZE: usize = 32;
 pub const W: usize = 256;
 
 #[no_mangle]
@@ -70,15 +71,7 @@ pub fn divide_simd(s: &[Q; W]) -> usize {
         matches.to_bitmask().count_ones() as usize
     }
 
-    let mut count = 0;
-    let s = Slice::<'_, _, W>::from(s);
-
-    s.apply(
-        &mut #[inline(always)]
-        |bl: Slice<'_, _, { GROUP_SIZE }>| count += count_block(bl.0),
-    );
-
-    count
+    s.array_chunks::<GROUP_SIZE>().map(count_block).sum()
 }
 
 enum Assert<const COND: bool> {}
