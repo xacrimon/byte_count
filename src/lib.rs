@@ -12,7 +12,7 @@ use std::simd::prelude::*;
 type Q = i16;
 
 const GROUP_SIZE: usize = 32;
-pub const W: usize = 512;
+pub const W: usize = 128;
 
 #[no_mangle]
 pub fn count_bytes(s: &[Q; W]) -> usize {
@@ -72,63 +72,47 @@ pub fn interleaved_pipelined(s: &[Q; W]) -> usize {
         let raw = s.map(i16::to_ne_bytes);
         let bytes = raw.as_flattened();
 
-        let zero = Simd::splat(0);
-        let mask = Mask::from_bitmask(0b0101_0101_0101_0101);
-        let h1 = Simd::load_select(&bytes[..16], mask, zero);
-        let h2 = Simd::load_select(&bytes[16..], mask, zero);
+        let [h1, h2] = unsafe {
+            [
+                Simd::<u8, 16>::from_array(bytes[..16].try_into().unwrap_unchecked()),
+                Simd::<u8, 16>::from_array(bytes[16..].try_into().unwrap_unchecked()),
+            ]
+        };
 
-        h1 | h2.rotate_elements_right::<1>()
+        simd_swizzle!(
+            h1,
+            h2,
+            [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
+        )
     }
 
     let needle = Simd::splat(b'\n');
-    let popcnt_4b_lut = Simd::from_array(array::from_fn::<u8, 16, _>(|i| i as u8)).count_ones();
+    let lut_masks = [Simd::splat(0b1111_0000), Simd::splat(0b0000_1111)];
+    let popcnt_4b_lut = Simd::from_array(array::from_fn::<u8, 16, _>(|i| i.count_ones() as u8));
+    let lut_lookup = |bitfield| lut_masks.map(|mask| popcnt_4b_lut.swizzle_dyn(bitfield & mask));
+    let accum_mask = |offset: u32| Simd::splat(1 << offset);
 
-    let mut acc = 0;
+    let mut counter = 0;
     for chunk in s.array_chunks::<128>() {
         let mut slices = chunk.array_chunks::<16>().map(select_filter_load);
+        let mut next_byte = || slices.next().unwrap();
+        let mut accum = Simd::<u8, 16>::splat(0);
 
-        let mut take = || slices.next().unwrap();
-        let mut found_field = Simd::<u8, 16>::splat(0);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(0);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(1);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(2);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(3);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(4);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(5);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(6);
+        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(7);
 
-        let cand_a = take();
-        let eq_mask_a = cand_a.simd_eq(needle);
-        found_field |= eq_mask_a.to_int().cast::<u8>() & Simd::splat(1 << 0);
-
-        let cand_b = take();
-        let eq_mask_b = cand_b.simd_eq(needle);
-        found_field |= eq_mask_b.to_int().cast::<u8>() & Simd::splat(1 << 1);
-
-        let cand_c = take();
-        let eq_mask_c = cand_c.simd_eq(needle);
-        found_field |= eq_mask_c.to_int().cast::<u8>() & Simd::splat(1 << 2);
-
-        let cand_d = take();
-        let eq_mask_d = cand_d.simd_eq(needle);
-        found_field |= eq_mask_d.to_int().cast::<u8>() & Simd::splat(1 << 3);
-
-        let cand_e = take();
-        let eq_mask_e = cand_e.simd_eq(needle);
-        found_field |= eq_mask_e.to_int().cast::<u8>() & Simd::splat(1 << 4);
-
-        let cand_f = take();
-        let eq_mask_f = cand_f.simd_eq(needle);
-        found_field |= eq_mask_f.to_int().cast::<u8>() & Simd::splat(1 << 5);
-
-        let cand_g = take();
-        let eq_mask_g = cand_g.simd_eq(needle);
-        found_field |= eq_mask_g.to_int().cast::<u8>() & Simd::splat(1 << 6);
-
-        let cand_h = take();
-        let eq_mask_h = cand_h.simd_eq(needle);
-        found_field |= eq_mask_h.to_int().cast::<u8>() & Simd::splat(1 << 7);
-
-        let ca = popcnt_4b_lut.swizzle_dyn(found_field & Simd::splat(0b1111_0000));
-        let cb = popcnt_4b_lut.swizzle_dyn(found_field & Simd::splat(0b0000_1111));
-        acc += (ca + cb).reduce_sum() as usize;
+        let [ca, cb] = lut_lookup(accum);
+        counter += (ca + cb).reduce_sum() as usize;
         debug_assert!(slices.next().is_none());
     }
 
-    acc
+    counter
 }
 
 enum Assert<const COND: bool> {}
