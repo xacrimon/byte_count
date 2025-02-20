@@ -21,26 +21,34 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("count_newlines");
     group.throughput(criterion::Throughput::Bytes(count_bytes::W as u64));
 
-    group.bench_function("naive", |b| {
-        b.iter_batched_ref(
-            || generate_data(),
-            |data| count_bytes::naive(black_box(data)),
-            criterion::BatchSize::SmallInput,
-        )
-    });
-
-    group.bench_function("divide & conquer", |b| {
-        b.iter_batched_ref(
-            || generate_data(),
-            |data| count_bytes::divide(black_box(data)),
-            criterion::BatchSize::SmallInput,
-        )
-    });
+    //group.bench_function("naive", |b| {
+    //    b.iter_batched_ref(
+    //        || generate_data(),
+    //        |data| count_bytes::naive(black_box(data)),
+    //        criterion::BatchSize::SmallInput,
+    //    )
+    //});
+//
+    //group.bench_function("divide & conquer", |b| {
+    //    b.iter_batched_ref(
+    //        || generate_data(),
+    //        |data| count_bytes::divide(black_box(data)),
+    //        criterion::BatchSize::SmallInput,
+    //    )
+    //});
 
     group.bench_function("divide & conquer + simd", |b| {
         b.iter_batched_ref(
             || generate_data(),
             |data| count_bytes::divide_simd(black_box(data)),
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("interleaved pipelined", |b| {
+        b.iter_batched_ref(
+            || generate_data(),
+            |data| count_bytes::interleaved_pipelined(black_box(data)),
             criterion::BatchSize::SmallInput,
         )
     });
