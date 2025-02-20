@@ -28,7 +28,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     //        criterion::BatchSize::SmallInput,
     //    )
     //});
-//
+    //
     //group.bench_function("divide & conquer", |b| {
     //    b.iter_batched_ref(
     //        || generate_data(),

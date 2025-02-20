@@ -5,13 +5,14 @@
 #![feature(portable_simd)]
 #![feature(array_chunks)]
 
+use std::array;
 use std::convert::TryInto;
 use std::simd::prelude::*;
 
 type Q = i16;
 
 const GROUP_SIZE: usize = 32;
-pub const W: usize = 64;
+pub const W: usize = 512;
 
 #[no_mangle]
 pub fn count_bytes(s: &[Q; W]) -> usize {
@@ -42,15 +43,6 @@ pub fn divide(s: &[Q; W]) -> usize {
     count
 }
 
-//#[inline(always)]
-//pub fn divide_simd(s: &[Q; W]) -> usize {
-//    use std::simd::{Simd, cmp::SimdPartialEq, num::SimdInt};
-//    let mut count = 0;
-//    let s = Slice::<'_,_,W>::from(s);
-//    s.apply(&mut #[inline(always)] |bl: Slice<'_, _, { GROUP_SIZE }>| count += Simd::from_array(*bl.0).simd_eq(Simd::splat(b'\n' as Q)).to_bitmask().count_ones() as usize);
-//    count
-//}
-
 #[inline(never)]
 pub fn divide_simd(s: &[Q; W]) -> usize {
     #[inline(always)]
@@ -75,45 +67,68 @@ pub fn divide_simd(s: &[Q; W]) -> usize {
 
 #[inline(never)]
 pub fn interleaved_pipelined(s: &[Q; W]) -> usize {
-    const CHK_SZ: usize = 32;
-    const VEC_SZ_16: usize = 8;
-    const VEC_SZ_8: usize = 16;
-    //const VEC_CNT: usize = CHK_SZ / VEC_SZ_16;
-    const NEEDLE: Simd<u8, VEC_SZ_8> = Simd::splat(b'\n');
+    #[inline(always)]
+    fn select_filter_load(s: &[i16; 16]) -> Simd<u8, 16> {
+        let raw = s.map(i16::to_ne_bytes);
+        let bytes = raw.as_flattened();
 
-    let low = |[a, b]: [Simd<u8, VEC_SZ_8>;2]| Simd::deinterleave(a, b).0;
-    let flatten_array = |arr: [[u8;2];8]| unsafe { arr.as_flattened().try_into().unwrap_unchecked() };
+        let zero = Simd::splat(0);
+        let mask = Mask::from_bitmask(0b0101_0101_0101_0101);
+        let h1 = Simd::load_select(&bytes[..16], mask, zero);
+        let h2 = Simd::load_select(&bytes[16..], mask, zero);
 
-    s.array_chunks::<CHK_SZ>()
-        .map(|chunk| {
-            let mut vecs = chunk
-                .array_chunks::<VEC_SZ_16>()
-                .copied()
-                .map(|arr| arr.map(i16::to_ne_bytes))
-                .map(flatten_array)
-                .map(Simd::<u8,VEC_SZ_8>::from_array);
+        h1 | h2.rotate_elements_right::<1>()
+    }
 
-            let [r0, r1, r2, r3] = unsafe {[
-                vecs.next().unwrap_unchecked(),
-                vecs.next().unwrap_unchecked(),
-                vecs.next().unwrap_unchecked(),
-                vecs.next().unwrap_unchecked(),
-            ]};
+    let needle = Simd::splat(b'\n');
+    let popcnt_4b_lut = Simd::from_array(array::from_fn::<u8, 16, _>(|i| i as u8)).count_ones();
 
-            let hay0 = low([r0, r1]);
-            let hay1 = low([r2, r3]);
+    let mut acc = 0;
+    for chunk in s.array_chunks::<128>() {
+        let mut slices = chunk.array_chunks::<16>().map(select_filter_load);
 
-            let mask0 = NEEDLE.simd_eq(hay0);
-            let mask1 = NEEDLE.simd_eq(hay1);
+        let mut take = || slices.next().unwrap();
+        let mut found_field = Simd::<u8, 16>::splat(0);
 
-            let cmb = mask0.to_bitmask() << 0 | mask1.to_bitmask() << 16;
-            cmb.count_ones() as usize
-            
-            //let l: mask8x4 = simd_swizzle!(mask0, mask1, [0, 1, 2, 3]);
+        let cand_a = take();
+        let eq_mask_a = cand_a.simd_eq(needle);
+        found_field |= eq_mask_a.to_int().cast::<u8>() & Simd::splat(1 << 0);
 
-            //mask0.to_bit
-        })
-        .sum()
+        let cand_b = take();
+        let eq_mask_b = cand_b.simd_eq(needle);
+        found_field |= eq_mask_b.to_int().cast::<u8>() & Simd::splat(1 << 1);
+
+        let cand_c = take();
+        let eq_mask_c = cand_c.simd_eq(needle);
+        found_field |= eq_mask_c.to_int().cast::<u8>() & Simd::splat(1 << 2);
+
+        let cand_d = take();
+        let eq_mask_d = cand_d.simd_eq(needle);
+        found_field |= eq_mask_d.to_int().cast::<u8>() & Simd::splat(1 << 3);
+
+        let cand_e = take();
+        let eq_mask_e = cand_e.simd_eq(needle);
+        found_field |= eq_mask_e.to_int().cast::<u8>() & Simd::splat(1 << 4);
+
+        let cand_f = take();
+        let eq_mask_f = cand_f.simd_eq(needle);
+        found_field |= eq_mask_f.to_int().cast::<u8>() & Simd::splat(1 << 5);
+
+        let cand_g = take();
+        let eq_mask_g = cand_g.simd_eq(needle);
+        found_field |= eq_mask_g.to_int().cast::<u8>() & Simd::splat(1 << 6);
+
+        let cand_h = take();
+        let eq_mask_h = cand_h.simd_eq(needle);
+        found_field |= eq_mask_h.to_int().cast::<u8>() & Simd::splat(1 << 7);
+
+        let ca = popcnt_4b_lut.swizzle_dyn(found_field & Simd::splat(0b1111_0000));
+        let cb = popcnt_4b_lut.swizzle_dyn(found_field & Simd::splat(0b0000_1111));
+        acc += (ca + cb).reduce_sum() as usize;
+        debug_assert!(slices.next().is_none());
+    }
+
+    acc
 }
 
 enum Assert<const COND: bool> {}
