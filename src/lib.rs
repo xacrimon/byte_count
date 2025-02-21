@@ -54,9 +54,13 @@ pub fn interleaved_pipelined(s: &[Q]) -> usize {
     }
 
     let needle = Simd::splat(b'\n');
-    let lut_masks = [Simd::splat(0b1111_0000), Simd::splat(0b0000_1111)];
     let popcnt_4b_lut = Simd::from_array(array::from_fn::<u8, LANES, _>(|i| i.count_ones() as u8));
-    let lut_lookup = |bitfield| lut_masks.map(|mask| popcnt_4b_lut.swizzle_dyn(bitfield & mask));
+    let lut_lookup = |bitfield| {
+        (
+            popcnt_4b_lut.swizzle_dyn(bitfield & Simd::splat(0x0F)),
+            popcnt_4b_lut.swizzle_dyn(bitfield >> Simd::splat(4)),
+        )
+    };
     let accum_mask = |offset: u32| Simd::splat(1 << offset);
 
     let mut counter = 0;
@@ -74,7 +78,7 @@ pub fn interleaved_pipelined(s: &[Q]) -> usize {
         accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(6);
         accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(7);
 
-        let [ca, cb] = lut_lookup(accum);
+        let (ca, cb) = lut_lookup(accum);
         counter += (ca + cb).reduce_sum() as usize;
         debug_assert!(slices.next().is_none());
     }
