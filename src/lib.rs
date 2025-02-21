@@ -29,7 +29,6 @@ pub fn naive(s: &[Q]) -> usize {
 
 #[inline(never)]
 pub fn interleaved_pipelined(s: &[Q]) -> usize {
-    const IPL: usize = 8;
     const LANES: usize = 16;
     const UNPACK_SZ: usize = 16;
     const BATCH_SIZE: usize = 128;
@@ -56,28 +55,28 @@ pub fn interleaved_pipelined(s: &[Q]) -> usize {
 
     let needle = Simd::splat(b'\n');
     let popcnt_4b_lut = Simd::from_array(array::from_fn::<u8, LANES, _>(|i| i.count_ones() as u8));
+    let mut accum = 0;
 
-    let mut counter = 0;
     for chunk in s.array_chunks::<BATCH_SIZE>() {
         let mut slices = chunk.array_chunks().map(select_filter_load);
         let mut next_byte = || unsafe { slices.next().unwrap_unchecked() };
-        let mut eqf = Simd::splat(0);
 
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_1000);
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0100);
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0010);
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0001);
-        let ctr_a = popcnt_4b_lut.swizzle_dyn(eqf);
+        let eqf = next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_1000)
+            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0100)
+            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0010)
+            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0001);
 
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b1000_0000);
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0100_0000);
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0010_0000);
-        eqf |= next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0001_0000);
-        let ctr_b = popcnt_4b_lut.swizzle_dyn(eqf >> Simd::splat(4));
+        accum += popcnt_4b_lut.swizzle_dyn(eqf).reduce_sum() as usize;
 
-        debug_assert!(slices.next().is_none());
-        counter += (ctr_a + ctr_b).reduce_sum() as usize;
+        let eqf = next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b1000_0000)
+            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0100_0000)
+            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0010_0000)
+            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0001_0000);
+
+        accum += popcnt_4b_lut
+            .swizzle_dyn(eqf >> Simd::splat(4))
+            .reduce_sum() as usize;
     }
 
-    counter
+    accum
 }
