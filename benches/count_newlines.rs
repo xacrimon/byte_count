@@ -30,13 +30,13 @@ fn criterion_benchmark(c: &mut Criterion) {
         )
     });
 
-    group.bench_function("interleaved pipelined", |b| {
-        b.iter_batched_ref(
-            || generate_data(),
-            |data| count_bytes::interleaved_pipelined(black_box(data)),
-            criterion::BatchSize::LargeInput,
-        )
-    });
+    //group.bench_function("interleaved pipelined", |b| {
+    //    b.iter_batched_ref(
+    //        || generate_data(),
+    //        |data| count_bytes::interleaved_pipelined(black_box(data)),
+    //        criterion::BatchSize::LargeInput,
+    //    )
+    //});
 
     group.finish();
 }

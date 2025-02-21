@@ -7,7 +7,7 @@
 
 use std::array;
 use std::convert::TryInto;
-use std::simd::prelude::*;
+use std::simd::{prelude::*, ToBytes};
 
 type Q = i16;
 
@@ -29,6 +29,7 @@ pub fn naive(s: &[Q]) -> usize {
 
 #[inline(never)]
 pub fn interleaved_pipelined(s: &[Q]) -> usize {
+    const IPL: usize = 8;
     const LANES: usize = 16;
     const UNPACK_SZ: usize = 16;
     const BATCH_SIZE: usize = 128;
@@ -54,28 +55,41 @@ pub fn interleaved_pipelined(s: &[Q]) -> usize {
     }
 
     let needle = Simd::splat(b'\n');
-    let lut_masks = [Simd::splat(0b1111_0000), Simd::splat(0b0000_1111)];
     let popcnt_4b_lut = Simd::from_array(array::from_fn::<u8, LANES, _>(|i| i.count_ones() as u8));
-    let lut_lookup = |bitfield| lut_masks.map(|mask| popcnt_4b_lut.swizzle_dyn(bitfield & mask));
-    let accum_mask = |offset: u32| Simd::splat(1 << offset);
+    let scalar_swiffle = |x: u32| {
+        let [mut b0, mut b1, mut b2, mut b3] = x.to_le_bytes();
+        // move the high nibbles in b2/b3 to b0/b1's low nibbles
+        b0 |= b2 >> 4;
+        b1 |= b3 >> 4;
+        // clear those high nibbles
+        b2 &= 0x0F;
+        b3 &= 0x0F;
+        u32::from_le_bytes([b0, b1, b2, b3])
+    };
 
     let mut counter = 0;
     for chunk in s.array_chunks::<BATCH_SIZE>() {
         let mut slices = chunk.array_chunks().map(select_filter_load);
         let mut next_byte = || slices.next().unwrap();
-        let mut accum = Simd::<u8, LANES>::splat(0);
 
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(0);
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(1);
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(2);
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(3);
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(4);
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(5);
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(6);
-        accum |= next_byte().simd_eq(needle).to_int().cast::<u8>() & accum_mask(7);
+        let mut eqfi_1 = Simd::<u32, 4>::default();
+        eqfi_1.as_mut_array()[0] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        eqfi_1.as_mut_array()[1] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        eqfi_1.as_mut_array()[2] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        eqfi_1.as_mut_array()[3] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        let i1 = eqfi_1.to_le_bytes();
+        let pcnt_1 = popcnt_4b_lut.swizzle_dyn(i1);
+        counter += pcnt_1.reduce_sum() as usize;
 
-        let [ca, cb] = lut_lookup(accum);
-        counter += (ca + cb).reduce_sum() as usize;
+        let mut eqfi_2 = Simd::<u32, 4>::default();
+        eqfi_2.as_mut_array()[0] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        eqfi_2.as_mut_array()[1] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        eqfi_2.as_mut_array()[2] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        eqfi_2.as_mut_array()[3] = scalar_swiffle(next_byte().simd_eq(needle).to_bitmask() as _);
+        let i2 = eqfi_2.to_le_bytes();
+        let pcnt_2 = popcnt_4b_lut.swizzle_dyn(i2);
+        counter += pcnt_2.reduce_sum() as usize;
+
         debug_assert!(slices.next().is_none());
     }
 
