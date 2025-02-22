@@ -5,8 +5,7 @@
 #![feature(portable_simd)]
 #![feature(array_chunks)]
 
-use std::array;
-use std::convert::TryInto;
+use std::hint;
 use std::simd::{prelude::*, ToBytes};
 
 #[inline(never)]
@@ -19,31 +18,41 @@ pub fn interleaved_pipelined_1b(haystack: &[u8], needle: u8) -> usize {
     const LANES: usize = 16;
     const BATCH_SIZE: usize = 128;
 
-    let needle = Simd::<u8, LANES>::splat(needle);
-    let mut accum = Simd::splat(0);
+    let v_needle = Simd::<u8, LANES>::splat(needle);
+    let mut v_accum = Simd::splat(0);
+    let mut accum = 0;
+    let (batches, tail) = haystack.as_chunks::<BATCH_SIZE>();
 
-    for chunk in haystack.array_chunks::<BATCH_SIZE>() {
-        let mut slices = chunk.array_chunks().copied().map(Simd::from_array);
+    for batch in batches {
+        let mut slices = batch.array_chunks().copied().map(Simd::from_array);
         let mut next_byte = || unsafe { slices.next().unwrap_unchecked() };
 
         fn select_bit<const N: usize>(eq: Mask<i8, 16>) -> Simd<u8, 16> {
             eq.to_int().cast::<u8>() & Simd::splat(1 << N)
         }
 
-        let eqf = select_bit::<0>(next_byte().simd_eq(needle))
-            | select_bit::<1>(next_byte().simd_eq(needle))
-            | select_bit::<2>(next_byte().simd_eq(needle))
-            | select_bit::<3>(next_byte().simd_eq(needle))
-            | select_bit::<4>(next_byte().simd_eq(needle))
-            | select_bit::<5>(next_byte().simd_eq(needle))
-            | select_bit::<6>(next_byte().simd_eq(needle))
-            | select_bit::<7>(next_byte().simd_eq(needle));
+        let eqf = select_bit::<0>(next_byte().simd_eq(v_needle))
+            | select_bit::<1>(next_byte().simd_eq(v_needle))
+            | select_bit::<2>(next_byte().simd_eq(v_needle))
+            | select_bit::<3>(next_byte().simd_eq(v_needle))
+            | select_bit::<4>(next_byte().simd_eq(v_needle))
+            | select_bit::<5>(next_byte().simd_eq(v_needle))
+            | select_bit::<6>(next_byte().simd_eq(v_needle))
+            | select_bit::<7>(next_byte().simd_eq(v_needle));
 
         let eqf_32 = Simd::<u32, { LANES / 4 }>::from_le_bytes(eqf);
-        accum += eqf_32.count_ones();
+        v_accum += eqf_32.count_ones();
     }
 
-    accum.reduce_sum() as usize
+    for &byte in tail {
+        accum += if hint::black_box(byte == needle) {
+            1
+        } else {
+            0
+        };
+    }
+
+    accum + v_accum.reduce_sum() as usize
 }
 
 #[cfg(test)]
