@@ -9,74 +9,64 @@ use std::array;
 use std::convert::TryInto;
 use std::simd::{prelude::*, ToBytes};
 
-type Q = i16;
-
-#[no_mangle]
-pub fn count_bytes(s: &[Q]) -> usize {
-    naive(s)
+#[inline(never)]
+pub fn naive_1b(haystack: &[u8], needle: u8) -> usize {
+    haystack.iter().copied().filter(|&x| x == needle).count()
 }
 
 #[inline(never)]
-pub fn naive(s: &[Q]) -> usize {
-    s.iter()
-        .copied()
-        .filter(
-            #[inline(always)]
-            |&x| x == b'\n' as i16,
-        )
-        .count()
-}
-
-#[inline(never)]
-pub fn interleaved_pipelined(s: &[Q]) -> usize {
+pub fn interleaved_pipelined_1b(haystack: &[u8], needle: u8) -> usize {
     const LANES: usize = 16;
-    const UNPACK_SZ: usize = 16;
     const BATCH_SIZE: usize = 128;
 
-    #[inline(always)]
-    fn select_filter_load(s: &[i16; UNPACK_SZ]) -> Simd<u8, LANES> {
-        let raw = s.map(i16::to_ne_bytes);
-        let bytes = raw.as_flattened();
-        let mid = bytes.len() / 2;
+    let needle = Simd::<u8, LANES>::splat(needle);
+    let mut accum = Simd::splat(0);
 
-        let [h1, h2] = unsafe {
-            [
-                Simd::<u8, LANES>::from_array(bytes[..mid].try_into().unwrap_unchecked()),
-                Simd::<u8, LANES>::from_array(bytes[mid..].try_into().unwrap_unchecked()),
-            ]
-        };
-
-        simd_swizzle!(
-            h1,
-            h2,
-            [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
-        )
-    }
-
-    let needle = Simd::splat(b'\n');
-    let popcnt_4b_lut = Simd::from_array(array::from_fn::<u8, LANES, _>(|i| i.count_ones() as u8));
-    let mut accum = 0;
-
-    for chunk in s.array_chunks::<BATCH_SIZE>() {
-        let mut slices = chunk.array_chunks().map(select_filter_load);
+    for chunk in haystack.array_chunks::<BATCH_SIZE>() {
+        let mut slices = chunk.array_chunks().copied().map(Simd::from_array);
         let mut next_byte = || unsafe { slices.next().unwrap_unchecked() };
 
-        let eqf = next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_1000)
-            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0100)
-            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0010)
-            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0000_0001);
+        fn select_bit<const N: usize>(eq: Mask<i8, 16>) -> Simd<u8, 16> {
+            eq.to_int().cast::<u8>() & Simd::splat(1 << N)
+        }
 
-        accum += popcnt_4b_lut.swizzle_dyn(eqf).reduce_sum() as usize;
+        let eqf = select_bit::<0>(next_byte().simd_eq(needle))
+            | select_bit::<1>(next_byte().simd_eq(needle))
+            | select_bit::<2>(next_byte().simd_eq(needle))
+            | select_bit::<3>(next_byte().simd_eq(needle))
+            | select_bit::<4>(next_byte().simd_eq(needle))
+            | select_bit::<5>(next_byte().simd_eq(needle))
+            | select_bit::<6>(next_byte().simd_eq(needle))
+            | select_bit::<7>(next_byte().simd_eq(needle));
 
-        let eqf = next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b1000_0000)
-            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0100_0000)
-            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0010_0000)
-            | next_byte().simd_eq(needle).to_int().cast::<u8>() & Simd::splat(0b0001_0000);
-
-        accum += popcnt_4b_lut
-            .swizzle_dyn(eqf >> Simd::splat(4))
-            .reduce_sum() as usize;
+        let eqf_32 = Simd::<u32, { LANES / 4 }>::from_le_bytes(eqf);
+        accum += eqf_32.count_ones();
     }
 
-    accum
+    accum.reduce_sum() as usize
+}
+
+#[cfg(test)]
+mod test {
+    use std::vec;
+
+    #[test]
+    fn verify_count() {
+        use rand::{rngs::SmallRng, Rng, RngCore, SeedableRng};
+        let mut rng = SmallRng::seed_from_u64(1);
+        let mut occurences_naive = vec![];
+        let mut occurences_interleaved_pipelined = vec![];
+
+        for _ in 0..64 {
+            let needle = rng.random();
+            let mut haystack = vec![0; 1024].into_boxed_slice();
+            rng.fill_bytes(&mut haystack);
+
+            occurences_naive.push(super::naive_1b(&haystack, needle));
+            occurences_interleaved_pipelined
+                .push(super::interleaved_pipelined_1b(&haystack, needle));
+        }
+
+        assert_eq!(occurences_naive, occurences_interleaved_pipelined);
+    }
 }
